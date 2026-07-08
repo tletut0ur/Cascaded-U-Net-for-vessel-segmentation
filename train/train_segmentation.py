@@ -11,7 +11,6 @@ import warnings
 import json
 import argparse
 import matplotlib.pyplot as plt
-import wandb
 from sklearn.model_selection import train_test_split, KFold
 
 import torch
@@ -21,7 +20,7 @@ from torchinfo import summary
 from torch.optim.lr_scheduler import LinearLR
 from torchviz import make_dot
 
-from monai.transforms import AddChanneld, LoadImaged, EnsureTyped, NormalizeIntensityd, RandSpatialCropd, adaptor, SqueezeDimd, Compose, EnsureChannelFirstd
+from monai.transforms import LoadImaged, EnsureTyped, NormalizeIntensityd, RandSpatialCropd, adaptor, SqueezeDimd, Compose, EnsureChannelFirstd
 from monai.data import CacheDataset
 
 from batchgenerators.transforms.color_transforms import BrightnessMultiplicativeTransform, \
@@ -53,14 +52,14 @@ parser.add_argument('--opt', metavar='opt', type=str, nargs="?", default='SGD', 
 parser.add_argument('--fold', metavar='fold', type=int, nargs="?", default=0, help='Fold to choose')
 parser.add_argument('--nbr_batch_epoch', nargs='?', type=int, default=50, help='Number of batch by epoch')
 parser.add_argument('--job_name', metavar='job_name', type=str, nargs="?", default='Local', help='Name of job on the cluster')
-parser.add_argument('--dir_data', metavar='dir_data', type=str, nargs="?", default='../data', help='Data directory')
+parser.add_argument('--dir_data', metavar='dir_data', type=str, nargs="?", default='./data', help='Data directory')
 parser.add_argument('--features', nargs='+', type=int, default=[16, 32, 64, 128], help='Number of features for each layer in the decoder')
 parser.add_argument('--patch_size', nargs='+', type=int, default=[64, 64, 64], help='Patch _size')
 parser.add_argument("--scheduler", help="Set learning rate scheduler for training", action="store_true")
 parser.add_argument("--nesterov", help="Use SGD with nesterov momentum", action="store_true")
 parser.add_argument('--entity', metavar='entity', type=str, default='', help='Entity for W&B')
 args = parser.parse_args()
-
+print("torch.cuda.is_available()", torch.cuda.is_available())
 # Check if GPU is available for training
 if torch.cuda.is_available():
     dev = "cuda:0"
@@ -130,19 +129,12 @@ wandb_config = {
 with open(res + '/config_training.json', 'w') as outfile:
     json.dump(wandb_config, outfile)
 
-# Init weight and biases
-if job_name == 'Local':
-    wandb.init(project='Debug', entity=args.entity, config=wandb_config, name=job_name)
-else:
-    wandb.init(project='cascaded-unet-segmentation', entity=args.entity, config=wandb_config, name=job_name)
-
 
 # %% Data splitting
 
 # Select data's directories
 dir_inputs = os.path.join(dir_data, 'Images')
 dir_GT = os.path.join(dir_data, 'GT')
-
 # Separate patients for training, validation and test
 patient = []
 for (root, directory, file) in os.walk(dir_inputs):
@@ -201,7 +193,7 @@ prob = 0.2
 transform_io = [LoadImaged(keys), EnsureChannelFirstd(keys), NormalizeIntensityd(keys='image'), RandSpatialCropd(keys, roi_size=patch_size, random_size=False)]
 
 # Data augmentation
-transform_augmentation = [AddChanneld(keys), EnsureTyped(keys, data_type="numpy")]
+transform_augmentation = [EnsureChannelFirstd(keys), EnsureTyped(keys, data_type="numpy")]
 
 transform_augmentation.append(adaptor(SpatialTransform(patch_size, patch_center_dist_from_border=None,
                                                        do_elastic_deform=False, alpha=(0.0, 900.0),
@@ -261,14 +253,16 @@ model = model.float()
 model = model.to(device)
 x = torch.zeros(1, 1, patch_size[0], patch_size[1], patch_size[2], dtype=torch.float, requires_grad=False, device=device)
 y = model(x)
-dot = make_dot(y)
-dot.format = 'jpg'
-dot.render(res + "/architecture")
+# dot = make_dot(y)
+# dot.format = 'jpg'
+# dot.render(res + "/architecture")
+
 model_summary = str(summary(model, input_size=(batch_size, 1, patch_size[0], patch_size[1], patch_size[2]), dtypes=[torch.float]))
+"""
 file_summary = open(res + "/model_summary.txt", "a")
 file_summary.write(model_summary)
 file_summary.close()
-
+"""
 if opt == "Adam":
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 elif opt == "SGD":
@@ -318,7 +312,6 @@ else:
 
 logs["Learning Rate"] = float(lr[0])
 logs["Epoch"] = 1
-wandb.log(logs)
 
 for t in range(1, epochs):
     print(f"Epoch {t+1}\n-------------------------------")
@@ -355,7 +348,6 @@ for t in range(1, epochs):
 
     logs["Learning Rate"] = float(lr[0])
     logs["Epoch"] = t + 1
-    wandb.log(logs)
     
     # Save best model
     if (val_loss < val_loss_save):
@@ -393,4 +385,3 @@ ax2.legend(loc='upper right', bbox_to_anchor=(1, 1.1))
 plt.title('Curves_training_n°' + str(num))
 plt.savefig(res + "/curves_training_n°" + str(num) + ".png")
 
-wandb.finish()
